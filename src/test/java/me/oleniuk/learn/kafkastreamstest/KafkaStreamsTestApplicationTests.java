@@ -11,6 +11,7 @@ import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.Producer;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
+import org.apache.kafka.common.header.internals.RecordHeader;
 import org.apache.kafka.common.serialization.*;
 import org.apache.kafka.streams.KafkaStreams;
 import org.apache.kafka.streams.StreamsBuilder;
@@ -21,22 +22,29 @@ import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.scheduling.annotation.EnableScheduling;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.testcontainers.containers.KafkaContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.utility.DockerImageName;
 
+import java.nio.ByteBuffer;
 import java.time.Duration;
-import java.util.Arrays;
-import java.util.Map;
-import java.util.Properties;
-import java.util.Set;
+import java.util.*;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
+import java.util.stream.IntStream;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 @Testcontainers
 @SpringBootTest
+@EnableScheduling
 class KafkaStreamsTestApplicationTests {
 
+    private final AtomicInteger indexer = new AtomicInteger(0);
     private final static String TEST_TOPIC_1 = "test_topic_1";
 
     private final static String TEST_TOPIC_2 = "test_topic_2";
@@ -51,23 +59,28 @@ class KafkaStreamsTestApplicationTests {
 
     @Test
     void test_send_receive() throws InterruptedException {
-        publish10MessagesToTopic(TEST_TOPIC_1, 0);
-        publish10MessagesToTopic(TEST_TOPIC_2, 10);
 //        startSimpleConsumer();
+        publishUnorderedMessagesToTopics();
         startKafkaStreamsConsumer();
     }
 
     private void startKafkaStreamsConsumer() throws InterruptedException {
-
+        var sortedList = IntStream.rangeClosed(0, 100)
+                .boxed()
+                .collect(Collectors.toList());
+        var values  = new ArrayList<>();
         final StreamsBuilder streamsBuilder = new StreamsBuilder();
 
         final Serde<String> stringSerde = Serdes.String();
         KStream<Person, String> stream1 = streamsBuilder.stream(TEST_TOPIC_1, Consumed.with(new PersonSerde(), stringSerde));
         KStream<String, String> stream2 = streamsBuilder.stream(TEST_TOPIC_2, Consumed.with(stringSerde, stringSerde));
 
-        stream1.selectKey((k, v) -> k.anonymize())
+        KStream<String, String> mergedStream = stream1.selectKey((k, v) -> k.anonymize())
                 .merge(stream2)
-                .foreach((key, value) -> System.out.printf("Stream Consumer Record:(%s, %s)\n", key, value));
+                .peek((key, value) -> System.out.printf("Stream Consumer Record:(%s, %s)\n", key, value));
+
+        mergedStream.process(TimestampOrderingProcessor::new);
+        mergedStream.foreach((k, v) -> values.add(Long.valueOf(v)));
 
         KafkaStreams myStream = new KafkaStreams(streamsBuilder.build(), getStreamsConfiguration(getKafkaBrokers()));
         myStream.cleanUp();
@@ -77,7 +90,9 @@ class KafkaStreamsTestApplicationTests {
 
         System.out.println("Kafka Streams Started");
 
-        Thread.sleep(10_000);
+        Thread.sleep(20_000);
+
+        assertEquals(sortedList, values);
 
         myStream.close();
     }
@@ -100,6 +115,34 @@ class KafkaStreamsTestApplicationTests {
         producer.close();
     }
 
+    private void publishUnorderedMessagesToTopics() {
+        Producer<String, String> producer = new KafkaProducer<>(
+                Map.of(
+                        ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, getKafkaBrokers(),
+                        ProducerConfig.CLIENT_ID_CONFIG, "integration_test_producer",
+                        ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName(),
+                        ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName()
+                ));
+        var random = new Random();
+        for (int i = 0; i <= 100; i++) {
+            var timeStampOfBefore = System.currentTimeMillis() - random.nextInt(1000000);
+            var timeStampOfAfter = System.currentTimeMillis() + random.nextInt(1000000);
+            var record = new ProducerRecord<>(
+                    (random.nextInt(5000) % 2 == 0) ? TEST_TOPIC_1 : TEST_TOPIC_2,
+                    Integer.toString(i),
+                    Integer.toString(i));
+
+//            record.headers().add(new RecordHeader("timestamp_type", "CreateTime".getBytes()));
+//            record.headers().add(new RecordHeader("timestamp", ByteBuffer.allocate(8).putLong(
+//                    (random.nextInt(5000) % 2 == 0) ? timeStampOfBefore : timeStampOfAfter
+//            ).array()));
+
+            producer.send(record);
+        }
+        System.out.println("Message sent successfully");
+        //producer.close();
+    }
+
     private void startSimpleConsumer() {
         Consumer<String, String> consumer = new KafkaConsumer<>(Map.of(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, getKafkaBrokers(), ConsumerConfig.GROUP_ID_CONFIG, "integration_test_producer_group", ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName(), ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName(), ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest"));
         consumer.subscribe(Set.of(TEST_TOPIC_1));
@@ -118,7 +161,7 @@ class KafkaStreamsTestApplicationTests {
         consumer.close();
         System.out.println("DONE");
 
-        Assertions.assertEquals(10, consumed);
+        assertEquals(10, consumed);
     }
 
 
@@ -132,6 +175,12 @@ class KafkaStreamsTestApplicationTests {
     private String getKafkaBrokers() {
         Integer mappedPort = kafkaContainer.getFirstMappedPort();
         return String.format("%s:%d", "localhost", mappedPort);
+    }
+
+    //@Scheduled(fixedDelay = 5000L)
+    public void publish() {
+        publish10MessagesToTopic(TEST_TOPIC_1, indexer.addAndGet(10));
+        publish10MessagesToTopic(TEST_TOPIC_2, indexer.get());
     }
 
 }
