@@ -65,9 +65,11 @@ class KafkaStreamsTestApplicationTests {
     }
 
     private void startKafkaStreamsConsumer() throws InterruptedException {
-        var sortedList = IntStream.rangeClosed(0, 100)
-                .boxed()
-                .collect(Collectors.toList());
+        var sortedList = new ArrayList<Integer>();
+        for (int i = 0; i <= 100; i++) {
+            sortedList.add(i);
+            sortedList.add(i);
+        }
         var values  = new ArrayList<>();
         final StreamsBuilder streamsBuilder = new StreamsBuilder();
 
@@ -90,7 +92,7 @@ class KafkaStreamsTestApplicationTests {
 
         System.out.println("Kafka Streams Started");
 
-        Thread.sleep(20_000);
+        Thread.sleep(10_000);
 
         assertEquals(sortedList, values);
 
@@ -127,17 +129,25 @@ class KafkaStreamsTestApplicationTests {
         for (int i = 0; i <= 100; i++) {
             var timeStampOfBefore = System.currentTimeMillis() - random.nextInt(1000000);
             var timeStampOfAfter = System.currentTimeMillis() + random.nextInt(1000000);
-            var record = new ProducerRecord<>(
-                    (random.nextInt(5000) % 2 == 0) ? TEST_TOPIC_1 : TEST_TOPIC_2,
+            producer.send( new ProducerRecord<>(
+                    /*(random.nextInt(5000) % 2 == 0) ? TEST_TOPIC_1 : TEST_TOPIC_2*/
+                    TEST_TOPIC_2,
                     Integer.toString(i),
-                    Integer.toString(i));
+                    Integer.toString(i)
+            ));
+
+            producer.send( new ProducerRecord<>(
+                    /*(random.nextInt(5000) % 2 == 0) ? TEST_TOPIC_1 : TEST_TOPIC_2*/
+                    TEST_TOPIC_1,
+                    Integer.toString(i),
+                    Integer.toString(i)
+            ));
 
 //            record.headers().add(new RecordHeader("timestamp_type", "CreateTime".getBytes()));
 //            record.headers().add(new RecordHeader("timestamp", ByteBuffer.allocate(8).putLong(
 //                    (random.nextInt(5000) % 2 == 0) ? timeStampOfBefore : timeStampOfAfter
 //            ).array()));
 
-            producer.send(record);
         }
         System.out.println("Message sent successfully");
         //producer.close();
